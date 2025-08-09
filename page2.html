@@ -1,208 +1,181 @@
 <!DOCTYPE html>
 <html lang="ko">
 <head>
-<meta charset="UTF-8" />
-<meta http-equiv="X-UA-Compatible" content="IE=edge" />
-<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
-<title>P2P Secure Redirect Chat</title>
-<style>
-  /* (기존 스타일 유지) */
-  body {
-    max-width: 800px;
-    margin: 40px auto;
-    font-family: 'Noto Sans KR', sans-serif, Arial, sans-serif;
-    background: #e5e5e5;
-    display: flex;
-    flex-direction: column;
-    height: 100vh;
-    padding: 0 16px;
-    box-sizing: border-box;
-    color: rgb(4,9,71);
-    user-select: none;
-  }
-  h1, h2 { text-align: center; color: rgb(4,9,71); }
-  #controls {
-    display: flex;
-    justify-content: center;
-    align-items: center;
-    gap: 16px;
-    flex-wrap: wrap;
-    margin-bottom: 16px;
-    font-size: 1rem;
-    font-weight: 600;
-  }
-  #controls span { font-weight: normal; }
-  #changeInfoBtn {
-    background: #ffe066;
-    border: none;
-    border-radius: 8px;
-    padding: 8px 16px;
-    cursor: pointer;
-    font-weight: 700;
-    color: rgb(4,9,71);
-    user-select: auto;
-  }
-  #linkInput { width: 70%; padding: 10px; font-size: 1rem; border-radius: 8px; border: 1px solid #ccc; }
-  #sendBtn {
-    padding: 10px 20px;
-    border: none;
-    border-radius: 8px;
-    background: #ffe066;
-    color: rgb(4,9,71);
-    font-weight: 700;
-    cursor: pointer;
-  }
-  #chat { list-style: none; padding: 0; height: 300px; overflow-y: auto; background: white; border-radius: 12px; margin-top: 20px; }
-  #chat li { margin: 10px; }
-  .user-badge { font-weight: 700; margin-right: 10px; }
-  .trusted { color: green; }
-  .secure-link { cursor: pointer; color: blue; text-decoration: underline; }
-</style>
+  <meta charset="UTF-8" />
+  <title>블록체인 링크 공유</title>
+  <style>
+    body {
+      font-family: sans-serif;
+      max-width: 600px;
+      margin: 40px auto;
+      background: #e5e5e5;
+      padding: 20px;
+    }
+    #info {
+      margin-bottom: 20px;
+      color: rgb(4,9,71);
+      font-weight: bold;
+    }
+    input[type=url] {
+      width: 70%;
+      padding: 10px;
+      border-radius: 8px;
+      border: 1px solid #ccc;
+    }
+    button {
+      padding: 10px 16px;
+      background: #ffe066;
+      border: none;
+      border-radius: 8px;
+      cursor: pointer;
+      font-weight: bold;
+      margin-left: 8px;
+    }
+    ul#chatList {
+      background: white;
+      padding: 16px;
+      border-radius: 12px;
+      max-height: 400px;
+      overflow-y: auto;
+      list-style: none;
+    }
+    ul#chatList li {
+      margin-bottom: 12px;
+    }
+    .user {
+      color: #04377a;
+      font-weight: 700;
+    }
+    .timestamp {
+      font-size: 0.8rem;
+      color: #666;
+      margin-left: 8px;
+    }
+  </style>
 </head>
 <body>
-  <h1>P2P Secure Redirect Chat (오프체인 + 온체인)</h1>
+  <div id="info"></div>
+  <input type="url" id="linkInput" placeholder="https://example.com" />
+  <button id="sendBtn">공유하기</button>
+  <ul id="chatList"></ul>
 
-  <div id="controls">
-    닉네임: <span id="nickname">익명</span>
-    지갑: <span id="walletAddress"></span>
-    <button id="changeInfoBtn">정보 변경</button>
-  </div>
-
-  <div>
-    <input type="url" id="linkInput" placeholder="https://example.com" />
-    <button id="sendBtn">Send Link</button>
-  </div>
-
-  <h2>Chat</h2>
-  <ul id="chat"></ul>
-
-  <script src="https://cdn.jsdelivr.net/npm/gun/gun.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/gun/lib/webrtc.js"></script>
   <script type="module">
-    import { sendLinkOnChain, sendOnChainClick, connectWallet } from './dapp.js';
+    import { ethers } from 'https://cdn.jsdelivr.net/npm/ethers@5.7.2/dist/ethers.esm.min.js';
+    
+    // 스마트컨트랙트 정보
+    const CONTRACT_ADDRESS = '0xYourDeployedContractAddressHere'; // 본인 컨트랙트 주소로 변경
+    const ABI = [
+      "event LinkShared(address indexed user, string link, uint256 timestamp)",
+      "function shareLink(string link) external"
+    ];
 
-    const nicknameEl = document.getElementById('nickname');
-    const walletEl = document.getElementById('walletAddress');
-    const changeBtn = document.getElementById('changeInfoBtn');
-    const inputEl = document.getElementById('linkInput');
-    const sendBtn = document.getElementById('sendBtn');
-    const chatEl = document.getElementById('chat');
+    // 서버 주소
+    const SERVER_URL = 'http://localhost:3000';
 
-    // 사용자 정보 불러오기
-    const userId = localStorage.getItem('userId') || '익명';
-    const walletAddress = localStorage.getItem('walletAddress') || '';
+    // URL에서 닉네임, 지갑 주소 받기
+    const params = new URLSearchParams(window.location.search);
+    const userNickname = params.get('nickname') || '익명';
+    const walletAddress = params.get('wallet') || '';
 
-    nicknameEl.textContent = userId;
-    walletEl.textContent = walletAddress;
+    document.getElementById('info').textContent = `사용자: ${userNickname} 지갑: ${walletAddress}`;
 
-    changeBtn.addEventListener('click', () => {
-      window.location.href = 'page1.html';
-    });
+    let provider, signer, contract;
+    let socket;
 
-    // 블록 및 체인 클래스 정의 (간단 구현)
-    class Block {
-      constructor(index, timestamp, data, previousHash) {
-        this.index = index;
-        this.timestamp = timestamp;
-        this.data = data;
-        this.previousHash = previousHash;
-        this.hash = this.calcHash();
-      }
-      calcHash() {
-        const str = this.index + this.previousHash + this.timestamp + JSON.stringify(this.data);
-        let hash = 0;
-        for (let i=0; i<str.length; i++) {
-          const chr = str.charCodeAt(i);
-          hash = ((hash << 5) - hash) + chr;
-          hash |= 0;
-        }
-        return (hash >>> 0).toString(16);
-      }
-    }
-    class Blockchain {
-      constructor() { this.chain = []; }
-      addBlock(block) { this.chain.push(block); }
-      getLatestBlock() { return this.chain[this.chain.length - 1]; }
+    // UI에 메시지 추가
+    function addMessageToList(user, link, timestamp) {
+      const chatList = document.getElementById('chatList');
+      const li = document.createElement('li');
+      const shortUser = user.slice(0,6) + '...' + user.slice(-4);
+      // timestamp는 Date 객체 또는 숫자면 적절히 포맷
+      const timeStr = (timestamp instanceof Date) ? timestamp.toLocaleString() : new Date(timestamp).toLocaleString();
+
+      li.innerHTML = `<span class="user">${shortUser}</span>: <a href="${link}" target="_blank" rel="noopener">${link}</a> <span class="timestamp">${timeStr}</span>`;
+      chatList.appendChild(li);
+      chatList.scrollTop = chatList.scrollHeight;
     }
 
-    const blockchain = new Blockchain();
+    // 메타마스크 연결 및 컨트랙트 세팅
+    async function connect() {
+      if (!window.ethereum) {
+        alert('MetaMask가 필요합니다!');
+        throw new Error('No MetaMask');
+      }
+      provider = new ethers.providers.Web3Provider(window.ethereum);
+      await provider.send('eth_requestAccounts', []);
+      signer = provider.getSigner();
+      contract = new ethers.Contract(CONTRACT_ADDRESS, ABI, signer);
+    }
 
-    // Gun.js 세팅 (로컬 개발시 http://localhost:8765/gun)
-    const gun = Gun({ peers: ['http://localhost:8765/gun'], localStorage: true });
-    const db = gun.get('p2p-chain');
+    // 스마트컨트랙트에 링크 공유 온체인 기록
+    async function shareLinkOnChain(link) {
+      if (!contract) await connect();
+      const tx = await contract.shareLink(link);
+      await tx.wait();
+    }
 
-    // 초기 블록체인 로드
-    db.map().once(data => {
-      if (!data) return;
-      const block = new Block(data.index, data.timestamp, data.data, data.previousHash);
-      blockchain.addBlock(block);
-      renderChat();
-    });
-
-    function renderChat() {
-      chatEl.innerHTML = '';
-      blockchain.chain.forEach(block => {
-        if(block.data.type === 'message') {
-          const li = document.createElement('li');
-          const badge = document.createElement('span');
-          badge.textContent = block.data.sender;
-          badge.className = 'user-badge';
-          li.appendChild(badge);
-
-          const link = document.createElement('a');
-          link.href = '#';
-          link.textContent = block.data.url;
-          link.className = 'secure-link';
-          link.addEventListener('click', (e) => {
-            e.preventDefault();
-            onClickLink(block);
-          });
-          li.appendChild(link);
-
-          chatEl.appendChild(li);
-        }
+    // 서버에 링크 저장 및 Socket.io 이벤트 처리
+    async function postLinkToServer(user, link) {
+      await fetch(`${SERVER_URL}/api/messages`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json'},
+        body: JSON.stringify({user, link}),
       });
     }
 
-    async function onClickLink(block) {
-      if (confirm(`${block.data.sender} 이 공유한 링크를 열고 클릭 기록을 남기시겠습니까?`)) {
-        try {
-          // 온체인 클릭 기록 트랜잭션 전송
-          await sendOnChainClick(block.data.url);
-          window.open(block.data.url, '_blank', 'width=800,height=600');
-        } catch(err) {
-          alert('클릭 기록 전송 실패: ' + err.message);
-        }
-      }
+    // Socket.io 연결 및 실시간 이벤트 수신
+    function setupSocket() {
+      socket = io(SERVER_URL);
+      socket.on('new-link', (data) => {
+        addMessageToList(data.user, data.link, data.timestamp);
+      });
     }
 
-    sendBtn.addEventListener('click', async () => {
-      const url = inputEl.value.trim();
-      if (!url) return alert('URL을 입력하세요');
-      try { new URL(url); } catch { return alert('올바른 URL을 입력하세요'); }
+    // 서버로부터 기존 링크 불러오기
+    async function loadExistingLinks() {
+      const res = await fetch(`${SERVER_URL}/api/messages`);
+      const links = await res.json();
+      links.forEach(item => addMessageToList(item.user, item.link, item.timestamp));
+    }
 
-      const prevBlock = blockchain.getLatestBlock();
-      const idx = blockchain.chain.length;
-      const prevHash = prevBlock ? prevBlock.hash : '0';
-      const block = new Block(idx, new Date().toISOString(),
-        { type: 'message', url, sender: userId }, prevHash);
-
-      // Gun에 저장
-      db.get(idx).put(block);
-      blockchain.addBlock(block);
-      renderChat();
-
-      // 온체인에 링크 기록
+    // 공유 버튼 이벤트 핸들러
+    document.getElementById('sendBtn').addEventListener('click', async () => {
+      const linkInput = document.getElementById('linkInput');
+      const link = linkInput.value.trim();
+      if (!link) {
+        alert('링크를 입력하세요.');
+        return;
+      }
       try {
-        await sendLinkOnChain(url);
-        console.log('온체인에 링크 공유 완료');
-      } catch (err) {
-        console.error('온체인 기록 실패:', err);
+        new URL(link); // URL 유효성 검사
+      } catch {
+        alert('올바른 URL을 입력하세요.');
+        return;
       }
 
-      inputEl.value = '';
+      try {
+        // 1) 서버에 저장 (중앙 DB + 실시간 알림)
+        await postLinkToServer(walletAddress || userNickname, link);
+        // 2) 온체인 기록 (옵션)
+        await shareLinkOnChain(link);
+        linkInput.value = '';
+      } catch (err) {
+        alert('링크 공유 실패: ' + err.message);
+      }
     });
 
+    // 초기화 함수
+    (async () => {
+      try {
+        await connect();
+        setupSocket();
+        await loadExistingLinks();
+      } catch (err) {
+        alert('초기화 실패: ' + err.message);
+      }
+    })();
   </script>
+
+  <script src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
 </body>
 </html>
